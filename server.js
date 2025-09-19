@@ -324,7 +324,7 @@ async function start() {
   try {
     await setupSecureEnvironment();
     
-    app.listen(PORT, () => {
+    app.listen(PORT, '0.0.0.0', () => {
       console.log(`
 ╔══════════════════════════════════════════╗
 ║   JusWay Documents API (SECURE)         ║
