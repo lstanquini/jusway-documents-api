@@ -62,6 +62,15 @@ app.use((req, res, next) => {
 // ====================================
 
 // Health check (sem autenticação)
+app.get('/', (req, res) => {
+  res.json({
+    status: 'ok',
+    service: 'JusWay Documents API (Secure)',
+    timestamp: new Date().toISOString(),
+    port: PORT
+  });
+});
+
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
