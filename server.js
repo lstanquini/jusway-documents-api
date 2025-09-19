@@ -295,3 +295,66 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`Modo: ${process.env.NODE_ENV || 'development'}`);
 });
 
+// Adicionar no final do server.js
+
+// Extrair variáveis de um template
+app.post('/api/templates/extract-variables', authenticate, upload.single('template'), async (req, res) => {
+  try {
+    const file = req.file;
+    
+    if (!file) {
+      return res.status(400).json({ error: 'Template file required' });
+    }
+    
+    const zip = new PizZip(file.buffer);
+    const doc = new Docxtemplater(zip, {
+      delimiters: { start: '{{', end: '}}' },
+      paragraphLoop: true,
+      linebreaks: true
+    });
+    
+    doc.compile();
+    const variables = doc.getTemplateVariables();
+    
+    res.json({
+      success: true,
+      variables: variables,
+      count: Object.keys(variables).length
+    });
+    
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to extract variables' });
+  }
+});
+
+// Verificar variáveis de template armazenado
+app.get('/api/templates/:templateId/variables', authenticate, async (req, res) => {
+  const tenantId = req.tenantId;
+  const { templateId } = req.params;
+  
+  try {
+    const template = templateStore[tenantId]?.[templateId];
+    
+    if (!template) {
+      return res.status(404).json({ error: 'Template not found' });
+    }
+    
+    const zip = new PizZip(template.buffer);
+    const doc = new Docxtemplater(zip, {
+      delimiters: { start: '{{', end: '}}' }
+    });
+    
+    doc.compile();
+    const variables = doc.getTemplateVariables();
+    
+    res.json({
+      success: true,
+      templateId: templateId,
+      templateName: template.name,
+      variables: variables
+    });
+    
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to extract variables' });
+  }
+});
