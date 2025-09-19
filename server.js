@@ -17,21 +17,16 @@ const PORT = process.env.PORT || 3001;
 // CONFIGURAÇÃO DE SEGURANÇA
 // ====================================
 
-// CORS restritivo - apenas domínios autorizados
+// CORS mais flexível para produção
 const corsOptions = {
   origin: function (origin, callback) {
-    const allowedOrigins = (process.env.ALLOWED_ORIGINS || '').split(',');
-    
-    // Permitir requests sem origin (Postman, etc) apenas em dev
-    if (!origin && process.env.NODE_ENV === 'development') {
+    // Em produção no Railway, permitir requisições sem origin (health checks)
+    if (!origin) {
       return callback(null, true);
     }
     
-    if (allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
+    // Permitir todas as origens por enquanto (ajustar depois)
+    callback(null, true);
   },
   credentials: true,
   optionsSuccessStatus: 200
