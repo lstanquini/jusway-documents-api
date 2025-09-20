@@ -66,6 +66,36 @@ const requestCounts = {};
 const JWT_SECRET = process.env.JWT_SECRET || 'f608cf6e0cf03d987b7ee2b77ea6c549c35e55dab58bc4802d2f0f00b5d1df13';
 
 // ========================================
+// FUNÇÃO AUXILIAR PARA EXTRAIR VARIÁVEIS (CORREÇÃO PRINCIPAL)
+// ========================================
+
+function extractVariablesFromDocx(fileBuffer) {
+  try {
+    const zip = new PizZip(fileBuffer);
+    const documentXml = zip.file('word/document.xml').asText();
+    
+    // Regex para encontrar {{variavel}}
+    const matches = documentXml.match(/\{\{([^}]+)\}\}/g) || [];
+    
+    // Remover duplicatas e formatar
+    const uniqueVariables = [...new Set(
+      matches.map(v => v.replace(/[{}]/g, '').trim())
+    )];
+    
+    // Retornar como objeto para compatibilidade
+    const variablesObj = {};
+    uniqueVariables.forEach(v => {
+      variablesObj[v] = v;
+    });
+    
+    return variablesObj;
+  } catch (error) {
+    console.error('Erro ao extrair variáveis:', error);
+    return {};
+  }
+}
+
+// ========================================
 // MIDDLEWARES
 // ========================================
 
@@ -288,7 +318,7 @@ app.get('/api/templates', authenticate, async (req, res) => {
   });
 });
 
-// Upload de template (ATUALIZADO com R2 e extração de variáveis)
+// Upload de template (CORRIGIDO)
 app.post('/api/templates/upload', authenticate, upload.single('template'), async (req, res) => {
   try {
     const tenantId = req.tenantId;
@@ -307,23 +337,10 @@ app.post('/api/templates/upload', authenticate, upload.single('template'), async
     // Gerar ID único
     const templateId = `tmpl_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     
-    // Extrair variáveis do template
-    let variables = {};
-    let variableCount = 0;
-    try {
-      const zip = new PizZip(file.buffer);
-      const doc = new Docxtemplater(zip, {
-        delimiters: { start: '{{', end: '}}' },
-        paragraphLoop: true,
-        linebreaks: true
-      });
-      doc.compile();
-      variables = doc.getTemplateVariables();
-      variableCount = Object.keys(variables).length;
-      console.log(`📝 Template ${templateId}: ${variableCount} variáveis detectadas`);
-    } catch (err) {
-      console.warn('⚠️  Não foi possível extrair variáveis:', err.message);
-    }
+    // CORREÇÃO: Usar a nova função para extrair variáveis
+    const variables = extractVariablesFromDocx(file.buffer);
+    const variableCount = Object.keys(variables).length;
+    console.log(`📝 Template ${templateId}: ${variableCount} variáveis detectadas`);
     
     // Preparar metadados
     const metadata = {
@@ -380,7 +397,7 @@ app.post('/api/templates/upload', authenticate, upload.single('template'), async
   }
 });
 
-// Extrair conteúdo HTML de template para visualização (NOVO!)
+// Extrair conteúdo HTML de template para visualização (CORRIGIDO)
 app.post('/api/templates/extract-content', authenticate, upload.single('template'), async (req, res) => {
   try {
     const file = req.file;
@@ -389,33 +406,26 @@ app.post('/api/templates/extract-content', authenticate, upload.single('template
       return res.status(400).json({ error: 'Template file required' });
     }
     
-    // Processar com docxtemplater
-    const zip = new PizZip(file.buffer);
-    const doc = new Docxtemplater(zip, {
-      delimiters: { start: '{{', end: '}}' },
-      paragraphLoop: true,
-      linebreaks: true
-    });
+    // CORREÇÃO: Usar a nova função para extrair variáveis
+    const variables = extractVariablesFromDocx(file.buffer);
     
-    // Compilar para extrair variáveis
-    doc.compile();
-    const variables = doc.getTemplateVariables();
+    // Processar o documento
+    const zip = new PizZip(file.buffer);
     
     // Extrair texto do documento
     let textContent = '';
     let htmlContent = '';
     
     try {
-      // Pegar o XML do documento
+      // Acessar o XML interno do documento
       const documentXml = zip.file('word/document.xml').asText();
       
-      // Extrair parágrafos (simplificado)
+      // Extrair parágrafos do XML
       const paragraphs = [];
       const paragraphRegex = /<w:p[^>]*>(.*?)<\/w:p>/gs;
       let match;
       
       while ((match = paragraphRegex.exec(documentXml)) !== null) {
-        // Extrair texto de cada parágrafo
         const paragraphContent = match[1];
         const textRegex = /<w:t[^>]*>(.*?)<\/w:t>/g;
         let paragraphText = '';
@@ -430,10 +440,9 @@ app.post('/api/templates/extract-content', authenticate, upload.single('template
         }
       }
       
-      // Juntar parágrafos
       textContent = paragraphs.join('\n\n');
       
-      // Criar HTML com destaque para variáveis
+      // Criar HTML formatado
       htmlContent = `
         <div style="font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.8; padding: 30px; max-width: 800px; margin: 0 auto;">
           <style>
@@ -511,7 +520,7 @@ app.post('/api/templates/extract-content', authenticate, upload.single('template
   }
 });
 
-// Extrair variáveis de um template enviado
+// Extrair variáveis de um template enviado (CORRIGIDO)
 app.post('/api/templates/extract-variables', authenticate, upload.single('template'), async (req, res) => {
   try {
     const file = req.file;
@@ -520,15 +529,8 @@ app.post('/api/templates/extract-variables', authenticate, upload.single('templa
       return res.status(400).json({ error: 'Template file required' });
     }
     
-    const zip = new PizZip(file.buffer);
-    const doc = new Docxtemplater(zip, {
-      delimiters: { start: '{{', end: '}}' },
-      paragraphLoop: true,
-      linebreaks: true
-    });
-    
-    doc.compile();
-    const variables = doc.getTemplateVariables();
+    // CORREÇÃO: Usar a nova função
+    const variables = extractVariablesFromDocx(file.buffer);
     
     res.json({
       success: true,
@@ -542,7 +544,7 @@ app.post('/api/templates/extract-variables', authenticate, upload.single('templa
   }
 });
 
-// Verificar variáveis de template armazenado
+// Verificar variáveis de template armazenado (CORRIGIDO)
 app.get('/api/templates/:templateId/variables', authenticate, async (req, res) => {
   const tenantId = req.tenantId;
   const { templateId } = req.params;
@@ -585,13 +587,7 @@ app.get('/api/templates/:templateId/variables', authenticate, async (req, res) =
     }
     
     // Senão, extrair do buffer
-    const zip = new PizZip(template.buffer);
-    const doc = new Docxtemplater(zip, {
-      delimiters: { start: '{{', end: '}}' }
-    });
-    
-    doc.compile();
-    const variables = doc.getTemplateVariables();
+    const variables = extractVariablesFromDocx(template.buffer);
     
     res.json({
       success: true,
