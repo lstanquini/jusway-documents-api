@@ -5,10 +5,14 @@
     "start": "node server.js"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.893.0",
+    "@aws-sdk/lib-storage": "^3.893.0",
     "axios": "^1.12.2",
     "cors": "^2.8.5",
     "docxtemplater": "^3.66.3",
+    "dotenv": "^17.2.2",
     "express": "4.18.2",
+    "form-data": "^4.0.4",
     "multer": "^2.0.2",
     "pizzip": "^3.2.0",
     "uuid": "^13.0.0"
