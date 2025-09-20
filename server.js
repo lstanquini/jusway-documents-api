@@ -380,6 +380,137 @@ app.post('/api/templates/upload', authenticate, upload.single('template'), async
   }
 });
 
+// Extrair conteúdo HTML de template para visualização (NOVO!)
+app.post('/api/templates/extract-content', authenticate, upload.single('template'), async (req, res) => {
+  try {
+    const file = req.file;
+    
+    if (!file) {
+      return res.status(400).json({ error: 'Template file required' });
+    }
+    
+    // Processar com docxtemplater
+    const zip = new PizZip(file.buffer);
+    const doc = new Docxtemplater(zip, {
+      delimiters: { start: '{{', end: '}}' },
+      paragraphLoop: true,
+      linebreaks: true
+    });
+    
+    // Compilar para extrair variáveis
+    doc.compile();
+    const variables = doc.getTemplateVariables();
+    
+    // Extrair texto do documento
+    let textContent = '';
+    let htmlContent = '';
+    
+    try {
+      // Pegar o XML do documento
+      const documentXml = zip.file('word/document.xml').asText();
+      
+      // Extrair parágrafos (simplificado)
+      const paragraphs = [];
+      const paragraphRegex = /<w:p[^>]*>(.*?)<\/w:p>/gs;
+      let match;
+      
+      while ((match = paragraphRegex.exec(documentXml)) !== null) {
+        // Extrair texto de cada parágrafo
+        const paragraphContent = match[1];
+        const textRegex = /<w:t[^>]*>(.*?)<\/w:t>/g;
+        let paragraphText = '';
+        let textMatch;
+        
+        while ((textMatch = textRegex.exec(paragraphContent)) !== null) {
+          paragraphText += textMatch[1];
+        }
+        
+        if (paragraphText.trim()) {
+          paragraphs.push(paragraphText.trim());
+        }
+      }
+      
+      // Juntar parágrafos
+      textContent = paragraphs.join('\n\n');
+      
+      // Criar HTML com destaque para variáveis
+      htmlContent = `
+        <div style="font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.8; padding: 30px; max-width: 800px; margin: 0 auto;">
+          <style>
+            .template-variable {
+              background-color: #fff3cd;
+              color: #856404;
+              padding: 2px 6px;
+              border: 1px solid #ffeeba;
+              border-radius: 4px;
+              font-family: 'Courier New', monospace;
+              font-size: 0.95em;
+              margin: 0 2px;
+              display: inline-block;
+            }
+            .template-paragraph {
+              margin-bottom: 16px;
+              text-align: justify;
+            }
+            .template-container h1, .template-container h2, .template-container h3 {
+              color: #2c3e50;
+              margin-top: 24px;
+              margin-bottom: 12px;
+            }
+          </style>
+          <div class="template-container">
+            ${paragraphs.map(paragraph => {
+              // Destacar variáveis no HTML
+              const highlightedParagraph = paragraph.replace(
+                /\{\{(\w+)\}\}/g,
+                '<span class="template-variable">{{$1}}</span>'
+              );
+              
+              // Detectar se é título (geralmente em caps ou no início)
+              if (paragraph === paragraph.toUpperCase() && paragraph.length < 100) {
+                return `<h2 style="text-align: center;">${highlightedParagraph}</h2>`;
+              }
+              
+              return `<p class="template-paragraph">${highlightedParagraph}</p>`;
+            }).join('\n')}
+          </div>
+        </div>
+      `;
+      
+    } catch (err) {
+      console.warn('⚠️  Erro ao processar XML:', err.message);
+      
+      // Fallback: retornar conteúdo básico
+      textContent = 'Não foi possível extrair o conteúdo completo do documento.';
+      htmlContent = `
+        <div style="padding: 20px;">
+          <p style="color: #721c24; background: #f8d7da; padding: 12px; border-radius: 4px;">
+            ⚠️ Não foi possível processar o documento completamente. 
+            Por favor, verifique se o arquivo DOCX está correto.
+          </p>
+          <p>Variáveis encontradas: ${Object.keys(variables).map(v => `<code>{{${v}}}</code>`).join(', ')}</p>
+        </div>
+      `;
+    }
+    
+    res.json({
+      success: true,
+      htmlContent: htmlContent,
+      textContent: textContent,
+      variables: variables,
+      variableCount: Object.keys(variables).length,
+      paragraphCount: textContent.split('\n\n').length
+    });
+    
+  } catch (error) {
+    console.error('❌ Erro ao extrair conteúdo:', error);
+    res.status(500).json({ 
+      error: 'Failed to extract content',
+      details: error.message 
+    });
+  }
+});
+
 // Extrair variáveis de um template enviado
 app.post('/api/templates/extract-variables', authenticate, upload.single('template'), async (req, res) => {
   try {
@@ -751,9 +882,11 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log('   GET  /health');
   console.log('   GET  /test-r2');
   console.log('   GET  /test-pdf');
-  console.log('   POST /api/auth/generate-token (novo!)');
+  console.log('   POST /api/auth/generate-token');
   console.log('   GET  /api/templates');
   console.log('   POST /api/templates/upload');
+  console.log('   POST /api/templates/extract-content (novo!)');
+  console.log('   POST /api/templates/extract-variables');
   console.log('   GET  /api/templates/:id/variables');
   console.log('   POST /api/documents/generate');
   console.log('========================================');
