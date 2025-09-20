@@ -7,9 +7,19 @@ const PizZip = require('pizzip');
 const cors = require('cors');
 const axios = require('axios');
 const multer = require('multer');
-const { v4: uuidv4 } = require('uuid');
+const crypto = require('crypto');
+const jwt = require('jsonwebtoken');
 const fs = require('fs').promises;
 const path = require('path');
+
+// Função para gerar IDs únicos sem uuid
+const generateId = () => {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    const r = Math.random() * 16 | 0;
+    const v = c == 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+};
 
 // Importar módulo R2 (se existir)
 let r2Storage = null;
@@ -45,46 +55,103 @@ const upload = multer({
 // Storage em memória para templates (temporário)
 const templateStore = {};
 
-// Chaves API por tenant (mover para banco de dados depois)
-const API_KEYS = {
-  'YmFzZTQ0OnNlbmhhMTIzOjE3NTgzMDk2Mjc5MDk=': 'base44',
-  // Adicione outras chaves aqui
-};
-
 // Rate limiting simples
 const requestCounts = {};
+
+// ========================================
+// CONFIGURAÇÃO JWT
+// ========================================
+
+// Usar a chave do ambiente ou a fornecida
+const JWT_SECRET = process.env.JWT_SECRET || 'f608cf6e0cf03d987b7ee2b77ea6c549c35e55dab58bc4802d2f0f00b5d1df13';
 
 // ========================================
 // MIDDLEWARES
 // ========================================
 
-// Middleware de autenticação melhorado
+// Middleware de autenticação JWT para SaaS multi-tenant
 const authenticate = (req, res, next) => {
-  const apiKey = req.headers['x-api-key'];
+  // Primeiro, tentar JWT (novo método)
+  const authHeader = req.headers.authorization;
   
-  if (!apiKey) {
-    return res.status(401).json({ error: 'API Key required' });
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    const token = authHeader.replace('Bearer ', '');
+    
+    try {
+      // Verificar e decodificar JWT
+      const decoded = jwt.verify(token, JWT_SECRET);
+      
+      // Validar campos obrigatórios
+      if (!decoded.tenantId) {
+        return res.status(401).json({ error: 'Invalid token: missing tenantId' });
+      }
+      
+      // Rate limiting por tenant
+      const now = Date.now();
+      const minute = Math.floor(now / 60000);
+      const key = `${decoded.tenantId}-${minute}`;
+      
+      requestCounts[key] = (requestCounts[key] || 0) + 1;
+      
+      if (requestCounts[key] > 30) {
+        return res.status(429).json({ error: 'Rate limit exceeded' });
+      }
+      
+      // Adicionar informações ao request
+      req.tenantId = decoded.tenantId;
+      req.tenantName = decoded.tenantName || decoded.tenantId;
+      req.permissions = decoded.permissions || [];
+      
+      console.log(`🔐 JWT Auth: Tenant ${req.tenantId} (${req.tenantName})`);
+      
+      next();
+    } catch (error) {
+      if (error.name === 'TokenExpiredError') {
+        return res.status(401).json({ error: 'Token expired' });
+      }
+      if (error.name === 'JsonWebTokenError') {
+        return res.status(401).json({ error: 'Invalid token' });
+      }
+      return res.status(401).json({ error: 'Authentication failed' });
+    }
+  } else {
+    // Fallback para API Key com x-tenant-id (compatibilidade)
+    const apiKey = req.headers['x-api-key'];
+    const tenantId = req.headers['x-tenant-id'];
+    
+    if (!apiKey) {
+      return res.status(401).json({ error: 'Authentication required (Bearer token or API key)' });
+    }
+    
+    if (!tenantId) {
+      return res.status(401).json({ error: 'Tenant ID required when using API key' });
+    }
+    
+    // Validar API key mestra (para compatibilidade com Base44 atual)
+    const MASTER_API_KEY = 'YmFzZTQ0OnNlbmhhMTIzOjE3NTgzMDk2Mjc5MDk=';
+    
+    if (apiKey !== MASTER_API_KEY) {
+      return res.status(401).json({ error: 'Invalid API key' });
+    }
+    
+    // Rate limiting por tenant
+    const now = Date.now();
+    const minute = Math.floor(now / 60000);
+    const key = `${tenantId}-${minute}`;
+    
+    requestCounts[key] = (requestCounts[key] || 0) + 1;
+    
+    if (requestCounts[key] > 30) {
+      return res.status(429).json({ error: 'Rate limit exceeded' });
+    }
+    
+    req.tenantId = tenantId;
+    req.tenantName = tenantId;
+    
+    console.log(`🔑 API Key Auth: Tenant ${req.tenantId}`);
+    
+    next();
   }
-  
-  const tenantId = API_KEYS[apiKey];
-  if (!tenantId) {
-    return res.status(401).json({ error: 'Invalid API Key' });
-  }
-  
-  // Rate limiting simples (30 req/min)
-  const now = Date.now();
-  const minute = Math.floor(now / 60000);
-  const key = `${tenantId}-${minute}`;
-  
-  requestCounts[key] = (requestCounts[key] || 0) + 1;
-  
-  if (requestCounts[key] > 30) {
-    return res.status(429).json({ error: 'Rate limit exceeded' });
-  }
-  
-  // Adicionar tenant ao request
-  req.tenantId = tenantId;
-  next();
 };
 
 // ========================================
@@ -133,6 +200,7 @@ app.get('/health', (req, res) => {
     status: 'ok', 
     port: PORT, 
     service: 'JusWay Documents API',
+    authMode: 'JWT + API Key',
     modules: {
       r2: r2Storage ? 'loaded' : 'not loaded',
       pdf: pdfConverter ? 'loaded' : 'not loaded'
@@ -158,6 +226,41 @@ app.get('/test-pdf', async (req, res) => {
   res.json(result);
 });
 
+// Endpoint para gerar JWT (para o Base44 usar)
+app.post('/api/auth/generate-token', (req, res) => {
+  const { apiKey, tenantId, tenantName } = req.body;
+  
+  // Validar API key mestra
+  const MASTER_API_KEY = 'YmFzZTQ0OnNlbmhhMTIzOjE3NTgzMDk2Mjc5MDk=';
+  
+  if (apiKey !== MASTER_API_KEY) {
+    return res.status(401).json({ error: 'Invalid master API key' });
+  }
+  
+  if (!tenantId) {
+    return res.status(400).json({ error: 'tenantId required' });
+  }
+  
+  // Gerar JWT
+  const token = jwt.sign(
+    {
+      tenantId: tenantId,
+      tenantName: tenantName || tenantId,
+      permissions: ['upload', 'generate', 'list', 'delete'],
+      issuedAt: Date.now()
+    },
+    JWT_SECRET,
+    { expiresIn: '24h' }
+  );
+  
+  res.json({
+    success: true,
+    token: token,
+    expiresIn: '24h',
+    type: 'Bearer'
+  });
+});
+
 // ========================================
 // ROTAS DE TEMPLATES
 // ========================================
@@ -172,15 +275,14 @@ app.get('/api/templates', authenticate, async (req, res) => {
     id: t.id,
     name: t.name,
     uploadedAt: t.uploadedAt,
-    storage: 'memory'
+    storage: 'memory',
+    variableCount: t.variableCount || 0
   }));
-  
-  // Se R2 estiver configurado, podemos adicionar mais informações
-  // Por enquanto, retornamos só o que está em memória
   
   res.json({ 
     success: true,
     tenant: tenantId,
+    tenantName: req.tenantName,
     templates: list,
     count: list.length
   });
@@ -230,6 +332,7 @@ app.post('/api/templates/upload', authenticate, upload.single('template'), async
       originalName: file.originalname,
       size: file.buffer.length,
       uploadedAt: new Date().toISOString(),
+      uploadedBy: req.tenantName,
       variables: variables,
       variableCount: variableCount
     };
@@ -244,7 +347,7 @@ app.post('/api/templates/upload', authenticate, upload.single('template'), async
       buffer: file.buffer
     };
     
-    console.log(`💾 Template ${templateId} salvo na memória`);
+    console.log(`💾 Template ${templateId} salvo para tenant ${tenantId}`);
     
     // Tentar salvar no R2 também
     let storageLocation = 'local';
@@ -266,7 +369,8 @@ app.post('/api/templates/upload', authenticate, upload.single('template'), async
       metadata: {
         name: metadata.name,
         size: metadata.size,
-        variableCount: variableCount
+        variableCount: variableCount,
+        tenant: req.tenantName
       }
     });
     
@@ -496,7 +600,7 @@ app.post('/api/documents/generate', authenticate, async (req, res) => {
       });
     }
 
-    console.log(`✅ Documento DOCX gerado com sucesso (${(docxBuffer.length / 1024).toFixed(2)} KB)`);
+    console.log(`✅ Documento DOCX gerado para ${req.tenantName} (${(docxBuffer.length / 1024).toFixed(2)} KB)`);
 
     // Se solicitado PDF, tentar converter
     let pdfBuffer = null;
@@ -626,6 +730,7 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 JusWay Documents API`);
   console.log(`📍 Porta: ${PORT}`);
   console.log(`🌍 Ambiente: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`🔐 Autenticação: JWT + API Key (compatibilidade)`);
   console.log('========================================');
   console.log('📦 Módulos carregados:');
   
@@ -646,6 +751,7 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log('   GET  /health');
   console.log('   GET  /test-r2');
   console.log('   GET  /test-pdf');
+  console.log('   POST /api/auth/generate-token (novo!)');
   console.log('   GET  /api/templates');
   console.log('   POST /api/templates/upload');
   console.log('   GET  /api/templates/:id/variables');
